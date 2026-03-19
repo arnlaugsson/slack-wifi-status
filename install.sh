@@ -2,7 +2,7 @@
 # =============================================================
 # slack-wifi-status installer
 # Usage (one-liner):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/USER/slack-wifi-status/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/arnlaugsson/slack-wifi-status/main/install.sh)
 # Or locally:
 #   ./install.sh
 # =============================================================
@@ -55,7 +55,7 @@ elif [[ -d "$INSTALL_DIR/.git" ]]; then
     echo "Updating existing installation..."
     git -C "$INSTALL_DIR" pull --quiet
 else
-    REPO_URL="https://github.com/USER/slack-wifi-status.git"
+    REPO_URL="https://github.com/arnlaugsson/slack-wifi-status.git"
     echo "Cloning to $INSTALL_DIR..."
     git clone --quiet "$REPO_URL" "$INSTALL_DIR"
     chmod +x "$WORKER"
