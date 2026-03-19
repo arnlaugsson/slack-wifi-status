@@ -17,20 +17,13 @@ if [[ ! -f "$TOKEN_FILE" ]]; then
 fi
 SLACK_TOKEN=$(cat "$TOKEN_FILE")
 
-# Get current WiFi SSID
-WIFI_IF=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
-RAW=$(networksetup -getairportnetwork "$WIFI_IF" 2>/dev/null)
+# Use default gateway IP as network fingerprint — works without location services
+GATEWAY=$(route -n get default 2>/dev/null | awk '/gateway/{print $2}')
 
-if [[ "$RAW" == *"not associated"* ]] || [[ -z "$RAW" ]]; then
-    SSID=""
-else
-    SSID="${RAW#Current Wi-Fi Network: }"
-fi
+log "Gateway: '${GATEWAY:-<none>}'"
 
-log "WiFi: '${SSID:-<none>}'"
-
-# Look up SSID in networks.conf (supports glob patterns)
-# Format: PATTERN|status text|:emoji:
+# Look up gateway in networks.conf (supports glob patterns)
+# Format: GATEWAY_PATTERN | status text | :emoji:
 STATUS_TEXT=""
 STATUS_EMOJI=""
 
@@ -44,7 +37,7 @@ if [[ -f "$NETWORKS_FILE" ]]; then
         pattern="${pattern%"${pattern##*[![:space:]]}"}"
         # Glob match (unquoted $pattern is intentional)
         # shellcheck disable=SC2053
-        if [[ "$SSID" == $pattern ]]; then
+        if [[ "$GATEWAY" == $pattern ]]; then
             STATUS_TEXT="${text#"${text%%[![:space:]]*}"}"
             STATUS_TEXT="${STATUS_TEXT%"${STATUS_TEXT##*[![:space:]]}"}"
             STATUS_EMOJI="${emoji#"${emoji%%[![:space:]]*}"}"
@@ -54,7 +47,7 @@ if [[ -f "$NETWORKS_FILE" ]]; then
     done < "$NETWORKS_FILE"
 fi
 
-# Fall back to defaults if no match (unknown network or no wifi)
+# Fall back to "On the move" for unknown/no network
 if [[ -z "$STATUS_TEXT" ]]; then
     STATUS_TEXT="On the move"
     STATUS_EMOJI=":iphone:"
@@ -63,12 +56,21 @@ fi
 log "Setting: $STATUS_TEXT $STATUS_EMOJI"
 
 # Build JSON safely and post to Slack
+# Statuses expire at 18:00 today; "On the move" never expires (0)
 PAYLOAD=$(python3 -c "
-import json, sys
+import json, sys, time, datetime
+text, emoji = sys.argv[1], sys.argv[2]
+if text == 'On the move':
+    expiry = 0
+else:
+    now = datetime.datetime.now()
+    eod = now.replace(hour=18, minute=0, second=0, microsecond=0)
+    # If already past 18:00, don't set an expiry in the past
+    expiry = int(eod.timestamp()) if eod > now else 0
 print(json.dumps({'profile': {
-    'status_text':       sys.argv[1],
-    'status_emoji':      sys.argv[2],
-    'status_expiration': 0,
+    'status_text':       text,
+    'status_emoji':      emoji,
+    'status_expiration': expiry,
 }}))
 " "$STATUS_TEXT" "$STATUS_EMOJI")
 

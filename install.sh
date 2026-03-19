@@ -110,18 +110,19 @@ fi
 
 if [[ -z "$SKIP_NETWORKS" ]]; then
     echo
-    echo "Enter your Wi-Fi SSIDs and the Slack status to set for each."
-    echo "Press Enter to skip any network. Glob patterns supported (e.g. Office*)."
+    echo "Enter the default gateway IP for each network."
+    echo "Find it on any network with: route -n get default | awk '/gateway/{print \$2}'"
+    echo "Press Enter to skip. Glob patterns supported (e.g. 10.10.*)."
     echo
 
     CONF_LINES=()
     CONF_LINES+=("# slack-wifi-status network mappings")
-    CONF_LINES+=("# Format: SSID (glob ok) | status text | :emoji:")
+    CONF_LINES+=("# Format: GATEWAY_IP (glob ok) | status text | :emoji:")
+    CONF_LINES+=("# Find your gateway: route -n get default | awk '/gateway/{print \$2}'")
     CONF_LINES+=("")
 
     # Prompt for common scenarios
     for LABEL in "Home" "Office 1" "Office 2" "Mobile hotspot"; do
-        # Pre-fill label based on slot
         case "$LABEL" in
             "Home")           DEFAULT_TEXT="Working from home"; DEFAULT_EMOJI=":house_with_garden:" ;;
             "Mobile hotspot") DEFAULT_TEXT="On the move";       DEFAULT_EMOJI=":iphone:"            ;;
@@ -129,11 +130,11 @@ if [[ -z "$SKIP_NETWORKS" ]]; then
         esac
 
         echo "$(bold "$LABEL")"
-        SSID=$(ask "  SSID" "")
-        [[ -z "$SSID" ]] && echo && continue
+        GATEWAY=$(ask "  Gateway IP" "")
+        [[ -z "$GATEWAY" ]] && echo && continue
         TEXT=$(ask "  Status text" "$DEFAULT_TEXT")
         EMOJI=$(ask "  Emoji" "$DEFAULT_EMOJI")
-        CONF_LINES+=("$SSID | $TEXT | $EMOJI")
+        CONF_LINES+=("$GATEWAY | $TEXT | $EMOJI")
         echo
     done
 
