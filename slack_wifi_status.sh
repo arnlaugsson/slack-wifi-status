@@ -1,51 +1,18 @@
 #!/bin/bash
-# =============================================================
 # slack_wifi_status.sh — Update Slack status based on WiFi
 # Triggered automatically by LaunchAgent on network changes.
-#
-# Edit the NETWORK → STATUS MAPPINGS section below,
-# then run: ./install_slack_wifi_status.sh
-# =============================================================
+# Configure via: ~/.config/slack-wifi-status/networks.conf
 
-# ---- NETWORK → STATUS MAPPINGS ------------------------------
-# Returns "status text|:emoji:" for a given SSID.
-# Patterns are matched top-to-bottom; use * for wildcards.
-get_status() {
-    local ssid="$1"
-    case "$ssid" in
-        "Bespin")
-            echo "Working from home|:house_with_garden:"
-            ;;
-        "Gangverk")
-            echo "At the Gangverk office|:office:"
-            ;;
-        "Origo-Gestir" | H158*)
-            echo "At Helix offices|:office:"
-            ;;
-        "iLuks")
-            # Mobile hotspot / 5G
-            echo "On the move|:iphone:"
-            ;;
-        "")
-            # No wifi
-            echo "On the move|:iphone:"
-            ;;
-        *)
-            # Unknown network
-            echo "On the move|:iphone:"
-            ;;
-    esac
-}
-# ---- END CONFIG ---------------------------------------------
-
+CONFIG_DIR="$HOME/.config/slack-wifi-status"
+TOKEN_FILE="$CONFIG_DIR/token"
+NETWORKS_FILE="$CONFIG_DIR/networks.conf"
 LOG="$HOME/.slack_wifi_status.log"
-TOKEN_FILE="$HOME/.config/slack-wifi-status/token"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
 # Read token
 if [[ ! -f "$TOKEN_FILE" ]]; then
-    log "ERROR: Token file not found at $TOKEN_FILE — run install_slack_wifi_status.sh"
+    log "ERROR: Token file not found — run install.sh"
     exit 1
 fi
 SLACK_TOKEN=$(cat "$TOKEN_FILE")
@@ -62,14 +29,40 @@ fi
 
 log "WiFi: '${SSID:-<none>}'"
 
-# Resolve status
-MAPPING=$(get_status "$SSID")
-STATUS_TEXT="${MAPPING%%|*}"
-STATUS_EMOJI="${MAPPING##*|}"
+# Look up SSID in networks.conf (supports glob patterns)
+# Format: PATTERN|status text|:emoji:
+STATUS_TEXT=""
+STATUS_EMOJI=""
+
+if [[ -f "$NETWORKS_FILE" ]]; then
+    while IFS='|' read -r pattern text emoji; do
+        # Skip comments and blank lines
+        [[ "$pattern" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${pattern// }" ]] && continue
+        # Trim whitespace
+        pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+        pattern="${pattern%"${pattern##*[![:space:]]}"}"
+        # Glob match (unquoted $pattern is intentional)
+        # shellcheck disable=SC2053
+        if [[ "$SSID" == $pattern ]]; then
+            STATUS_TEXT="${text#"${text%%[![:space:]]*}"}"
+            STATUS_TEXT="${STATUS_TEXT%"${STATUS_TEXT##*[![:space:]]}"}"
+            STATUS_EMOJI="${emoji#"${emoji%%[![:space:]]*}"}"
+            STATUS_EMOJI="${STATUS_EMOJI%"${STATUS_EMOJI##*[![:space:]]}"}"
+            break
+        fi
+    done < "$NETWORKS_FILE"
+fi
+
+# Fall back to defaults if no match (unknown network or no wifi)
+if [[ -z "$STATUS_TEXT" ]]; then
+    STATUS_TEXT="On the move"
+    STATUS_EMOJI=":iphone:"
+fi
 
 log "Setting: $STATUS_TEXT $STATUS_EMOJI"
 
-# Build JSON safely with python3
+# Build JSON safely and post to Slack
 PAYLOAD=$(python3 -c "
 import json, sys
 print(json.dumps({'profile': {
@@ -79,7 +72,6 @@ print(json.dumps({'profile': {
 }}))
 " "$STATUS_TEXT" "$STATUS_EMOJI")
 
-# Post to Slack
 RESPONSE=$(curl -s -X POST "https://slack.com/api/users.profile.set" \
     -H "Authorization: Bearer $SLACK_TOKEN" \
     -H "Content-Type: application/json; charset=utf-8" \
