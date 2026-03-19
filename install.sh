@@ -17,25 +17,27 @@ PLIST_LABEL="com.local.slack-wifi-status"
 PLIST="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 WORKER="$INSTALL_DIR/slack_wifi_status.sh"
 
+# ---------- Slack app credentials ----------------------------
+# One app shared by all users — maintainer fills these in once.
+# Requires: OAuth redirect URI http://localhost:9876/callback
+#           User scope: users.profile:write
+#           Manage Distribution → public distribution enabled
+SLACK_CLIENT_ID="REPLACE_WITH_CLIENT_ID"
+SLACK_CLIENT_SECRET="REPLACE_WITH_CLIENT_SECRET"
+OAUTH_PORT=9876
+# -------------------------------------------------------------
+
 # ---------- helpers ------------------------------------------
 bold()  { printf '\033[1m%s\033[0m' "$*"; }
 green() { printf '\033[32m%s\033[0m' "$*"; }
 dim()   { printf '\033[2m%s\033[0m' "$*"; }
 
 ask() {
-    # ask PROMPT DEFAULT
     local prompt="$1" default="$2"
     [[ -n "$default" ]] && prompt="$prompt [$(dim "$default")]"
     printf '%s: ' "$prompt"
     read -r reply
     echo "${reply:-$default}"
-}
-
-ask_secret() {
-    printf '%s: ' "$1"
-    read -rs reply
-    echo
-    echo "$reply"
 }
 
 # ---------- install / update repo ----------------------------
@@ -64,34 +66,93 @@ fi
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
-# ---------- Slack token --------------------------------------
+# ---------- Slack authorisation ------------------------------
 echo
 if [[ -f "$TOKEN_FILE" ]]; then
-    echo "Slack token already saved. $(dim 'Delete ~/.config/slack-wifi-status/token to replace.')"
+    echo "Slack already authorised. $(dim 'Delete ~/.config/slack-wifi-status/token to re-authorise.')"
 else
-    echo "$(bold 'Slack token')"
-    echo "Create one at: https://api.slack.com/apps"
-    echo "  → OAuth & Permissions → add 'users.profile:write' scope → install app → copy User OAuth Token"
+    echo "$(bold 'Authorising with Slack...')"
+    echo "A browser window will open — click Allow to continue."
     echo
-    TOKEN=$(ask_secret "Token (xoxp-...)")
-    if [[ -z "$TOKEN" ]]; then
-        echo "ERROR: No token provided." >&2; exit 1
+
+    OAUTH_CODE_FILE=$(mktemp)
+    OAUTH_ERROR_FILE=$(mktemp)
+
+    # Start a local HTTP server to catch the OAuth callback
+    python3 - "$OAUTH_PORT" "$OAUTH_CODE_FILE" "$OAUTH_ERROR_FILE" << 'PYEOF' &
+import http.server, urllib.parse, sys, threading, os
+
+port       = int(sys.argv[1])
+code_file  = sys.argv[2]
+error_file = sys.argv[3]
+
+HTML_OK  = b"<html><body style='font-family:sans-serif;padding:2em'><h2>&#x2705; Authorised!</h2><p>You can close this tab and return to the terminal.</p></body></html>"
+HTML_ERR = b"<html><body style='font-family:sans-serif;padding:2em'><h2>&#x274C; Authorisation failed</h2><p>Check the terminal for details.</p></body></html>"
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        if 'code' in params:
+            open(code_file, 'w').write(params['code'][0])
+            self.send_response(200); self.send_header('Content-type','text/html'); self.end_headers()
+            self.wfile.write(HTML_OK)
+        else:
+            err = params.get('error', ['unknown'])[0]
+            open(error_file, 'w').write(err)
+            self.send_response(400); self.send_header('Content-type','text/html'); self.end_headers()
+            self.wfile.write(HTML_ERR)
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
+    def log_message(self, *a): pass
+
+http.server.HTTPServer(('localhost', port), Handler).serve_forever()
+PYEOF
+
+    OAUTH_SERVER_PID=$!
+
+    # Open browser to Slack OAuth
+    REDIRECT_URI="http://localhost:${OAUTH_PORT}/callback"
+    OAUTH_URL="https://slack.com/oauth/v2/authorize?client_id=${SLACK_CLIENT_ID}&user_scope=users.profile:write&redirect_uri=${REDIRECT_URI}"
+    open "$OAUTH_URL"
+
+    # Wait up to 120s for the callback
+    for i in $(seq 1 120); do
+        if [[ -s "$OAUTH_CODE_FILE" ]]; then break; fi
+        if [[ -s "$OAUTH_ERROR_FILE" ]]; then
+            echo "ERROR: Slack returned: $(cat "$OAUTH_ERROR_FILE")" >&2
+            kill "$OAUTH_SERVER_PID" 2>/dev/null; rm -f "$OAUTH_CODE_FILE" "$OAUTH_ERROR_FILE"; exit 1
+        fi
+        sleep 1
+    done
+
+    kill "$OAUTH_SERVER_PID" 2>/dev/null
+
+    CODE=$(cat "$OAUTH_CODE_FILE" 2>/dev/null)
+    rm -f "$OAUTH_CODE_FILE" "$OAUTH_ERROR_FILE"
+
+    if [[ -z "$CODE" ]]; then
+        echo "ERROR: Timed out waiting for authorisation." >&2; exit 1
     fi
-    # Verify token
-    printf 'Verifying token... '
-    RESULT=$(curl -s -X POST "https://slack.com/api/auth.test" \
-        -H "Authorization: Bearer $TOKEN" \
-        -H "Content-Type: application/json")
-    if echo "$RESULT" | grep -q '"ok":true'; then
-        USER_NAME=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('user',''))" 2>/dev/null || echo "unknown")
-        echo "$(green "✓") ($USER_NAME)"
-        echo "$TOKEN" > "$TOKEN_FILE"
-        chmod 600 "$TOKEN_FILE"
-    else
+
+    # Exchange code for token
+    printf 'Exchanging code for token... '
+    RESULT=$(curl -s -X POST "https://slack.com/api/oauth.v2.access" \
+        --data-urlencode "client_id=${SLACK_CLIENT_ID}" \
+        --data-urlencode "client_secret=${SLACK_CLIENT_SECRET}" \
+        --data-urlencode "code=${CODE}" \
+        --data-urlencode "redirect_uri=${REDIRECT_URI}")
+
+    TOKEN=$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('authed_user',{}).get('access_token',''))" <<< "$RESULT")
+    USER_NAME=$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('authed_user',{}).get('id',''))" <<< "$RESULT")
+
+    if [[ -z "$TOKEN" ]]; then
         echo "failed."
-        echo "ERROR: Token verification failed. Check the token and try again." >&2
+        echo "ERROR: $(python3 -c "import json,sys; print(json.load(sys.stdin).get('error','unknown'))" <<< "$RESULT")" >&2
         exit 1
     fi
+
+    echo "$(green "✓") ($USER_NAME)"
+    echo "$TOKEN" > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
 fi
 
 # ---------- Network mappings ---------------------------------

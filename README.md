@@ -17,7 +17,7 @@ The installer will ask for your Slack token, then walk you through mapping netwo
 ## Requirements
 
 - macOS
-- A Slack user token (`xoxp-...`) with `users.profile:write` scope → [how to get one](#getting-a-slack-token)
+- A Slack account in the workspace you want to update (no admin rights needed)
 
 ## How it works
 
@@ -56,8 +56,12 @@ launchctl unload ~/Library/LaunchAgents/com.local.slack-wifi-status.plist
 launchctl load -w ~/Library/LaunchAgents/com.local.slack-wifi-status.plist
 ```
 
-## Getting a Slack token
+## For maintainers — one-time Slack app setup
 
-1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → From scratch
+Users don't need to create anything. You set up one shared Slack app:
+
+1. [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → From scratch
 2. **OAuth & Permissions** → User Token Scopes → add `users.profile:write`
-3. **Install to Workspace** → copy the **User OAuth Token** (`xoxp-...`)
+3. **OAuth & Permissions** → Redirect URLs → add `http://localhost:9876/callback`
+4. **Manage Distribution** → enable **Remove Hard Coded Information** + **Activate Public Distribution**
+5. Copy **Client ID** and **Client Secret** from Basic Information into `install.sh`
