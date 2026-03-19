@@ -1,0 +1,6 @@
+# Slack token (stored at ~/.config/slack-wifi-status/token instead)
+token
+*.token
+
+# Logs
+*.log
